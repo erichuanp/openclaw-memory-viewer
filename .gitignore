@@ -1,0 +1,4 @@
+node_modules/
+memory-viewer.log
+memory-viewer.err.log
+.DS_Store
