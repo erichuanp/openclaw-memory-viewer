@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw Memory Editor</title>
+  <style>
+    :root { --bg:#1e1e1e; --panel:#252526; --text:#d4d4d4; --muted:#9da5b4; --accent:#3794ff; --border:#333; --ok:#2ea043; --warn:#d29922; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+    .topbar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--border);background:var(--panel);color:var(--muted);font-size:13px;gap:12px}
+    .toolbar{display:flex;align-items:center;gap:8px}
+    .btn{border:1px solid #3f3f46;background:#2c2c2f;color:#d4d4d4;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px}
+    .btn.active{border-color:var(--accent);color:#fff;background:#1d3d66}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .status{font-size:12px;color:var(--muted)} .status.ok{color:var(--ok)} .status.warn{color:var(--warn)}
+    .layout{flex:1;display:grid;grid-template-columns:300px 1fr;min-height:0}
+    .sidebar{border-right:1px solid var(--border);background:#1f1f1f;overflow:auto;padding:10px}
+    .viewer{overflow:auto;padding:20px}
+    .tree{font-size:13px;line-height:1.7}
+    .node{cursor:pointer;user-select:none;color:var(--text)}
+    .node.file:hover,.node.dir:hover{color:var(--accent)}
+    .children{margin-left:16px;border-left:1px dashed #3c3c3c;padding-left:8px}
+    .selected{color:var(--accent);font-weight:600}
+    .markdown{max-width:980px;margin:0 auto;line-height:1.75}
+    .markdown h1,.markdown h2,.markdown h3{border-bottom:1px solid #3a3a3a;padding-bottom:.2em}
+    .markdown code{background:#2d2d2d;padding:2px 6px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .markdown pre{background:#2d2d2d;padding:12px;border-radius:8px;overflow:auto}
+    .markdown table{width:100%;border-collapse:collapse;margin:14px 0 24px;table-layout:fixed;background:#1a1b1f;border:1px solid #3a3a3a}
+    .markdown th,.markdown td{border:1px solid #3a3a3a;padding:10px 12px;vertical-align:top;text-align:left;line-height:1.5;word-break:break-word}
+    .markdown th{background:#22252b;color:#f3f4f6;font-weight:700}
+    .markdown tbody tr:nth-child(even){background:#202329}
+    #editor{width:100%;min-height:calc(100vh - 110px);max-width:980px;margin:0 auto;display:none;border:1px solid #3a3a3a;border-radius:8px;background:#111214;color:#e6e6e6;padding:14px;resize:vertical;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .hint{color:var(--muted)}
+    .context-menu{position:fixed;display:none;min-width:150px;background:#252526;border:1px solid #3d3d3d;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:9999;padding:6px}
+    .menu-item{padding:8px 10px;font-size:13px;border-radius:6px;cursor:pointer}
+    .menu-item:hover{background:#2f3138}
+    .menu-item.danger:hover{background:#4c1f24;color:#ffb3b8}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div id="topbar">OpenClaw Memory Editor</div>
+    <div class="toolbar">
+      <button id="toggleModeBtn" class="btn" disabled>切换到编辑</button>
+      <button id="saveBtn" class="btn" disabled>保存 (Ctrl+S)</button>
+      <span id="status" class="status">未选择文件</span>
+    </div>
+  </div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"><div class="tree" id="tree"></div></aside>
+    <main class="viewer">
+      <div class="markdown" id="content"><p class="hint">左侧选择一个 .md 文件。右键可新建/重命名/删除。</p></div>
+      <textarea id="editor" spellcheck="false"></textarea>
+    </main>
+  </div>
+
+  <div id="contextMenu" class="context-menu"></div>
+
+  <script>
+    const treeEl = document.getElementById('tree');
+    const sidebarEl = document.getElementById('sidebar');
+    const contentEl = document.getElementById('content');
+    const editorEl = document.getElementById('editor');
+    const topbarEl = document.getElementById('topbar');
+    const toggleModeBtn = document.getElementById('toggleModeBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const statusEl = document.getElementById('status');
+    const contextMenuEl = document.getElementById('contextMenu');
+
+    let selectedPath = '';
+    let isEditMode = false;
+    let originalContent = '';
+
+    function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
+    function setStatus(text, kind=''){statusEl.textContent=text;statusEl.className='status'+(kind?` ${kind}`:'')}
+    function hasChanges(){return isEditMode && selectedPath && editorEl.value!==originalContent}
+    function syncControls(){toggleModeBtn.disabled=!selectedPath;toggleModeBtn.textContent=isEditMode?'切换到预览':'切换到编辑';toggleModeBtn.classList.toggle('active',isEditMode);saveBtn.disabled=!hasChanges()}
+    function renderPreview(markdown){contentEl.innerHTML=marked.parse(markdown||'')}
+
+    function switchMode(editMode){
+      isEditMode=editMode;
+      if(isEditMode){contentEl.style.display='none';editorEl.style.display='block';editorEl.focus()}
+      else{contentEl.style.display='block';editorEl.style.display='none';renderPreview(editorEl.value)}
+      syncControls();
+    }
+
+    function canLeaveCurrentFile(){
+      if(!hasChanges()) return true;
+      return confirm('当前文件有未保存改动，确定继续？');
+    }
+
+    function hideContextMenu(){contextMenuEl.style.display='none';contextMenuEl.innerHTML=''}
+    function showContextMenu(x,y,items){
+      contextMenuEl.innerHTML='';
+      items.forEach(it=>{
+        const el=document.createElement('div');
+        el.className='menu-item'+(it.danger?' danger':'');
+        el.textContent=it.label;
+        el.onclick=()=>{hideContextMenu();it.onClick();};
+        contextMenuEl.appendChild(el);
+      });
+      contextMenuEl.style.left=`${x}px`; contextMenuEl.style.top=`${y}px`; contextMenuEl.style.display='block';
+    }
+
+    async function fsAction(payload){
+      const res=await fetch('/api/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.error||'操作失败');
+      return data;
+    }
+
+    async function createFile(baseDir=''){
+      const val=prompt('输入新文件路径（相对workspace，必须 .md，可含子目录）', baseDir?`${baseDir}/new.md`:'new.md');
+      if(!val) return;
+      const clean=val.trim().replace(/^\/+/, '');
+      if(!clean.toLowerCase().endsWith('.md')) return alert('只能创建 .md 文件');
+      await fsAction({action:'create_file', path:clean, content:'# '+clean.split('/').pop().replace(/\.md$/i,'')+'\n'});
+      setStatus(`已创建 ${clean}`,'ok');
+      await loadTree();
+      await loadFile(clean);
+    }
+
+    async function renameFile(path){
+      const base=path.split('/').pop();
+      const toName=prompt('新文件名（必须保留 .md）', base);
+      if(!toName) return;
+      const oldExt=base.split('.').pop().toLowerCase();
+      const newExt=(toName.split('.').pop()||'').toLowerCase();
+      if(oldExt!==newExt || newExt!=='md') return alert('不能修改 .md 后缀');
+      const r=await fsAction({action:'rename',fromPath:path,toName:toName.trim()});
+      if(selectedPath===path) selectedPath=r.toPath;
+      setStatus(`已重命名为 ${r.toPath}`,'ok');
+      await loadTree();
+      if(selectedPath) await loadFile(selectedPath);
+    }
+
+    async function renameDir(path){
+      const base=path.split('/').pop();
+      const toName=prompt('新文件夹名',base);
+      if(!toName) return;
+      const r=await fsAction({action:'rename',fromPath:path,toName:toName.trim()});
+      if(selectedPath && (selectedPath===path || selectedPath.startsWith(path+'/'))){
+        selectedPath=selectedPath.replace(path,r.toPath);
+      }
+      setStatus(`已重命名为 ${r.toPath}`,'ok');
+      await loadTree();
+      if(selectedPath) await loadFile(selectedPath);
+    }
+
+    async function deletePath(path, label){
+      if(!confirm(`确认删除${label}：${path} ?`)) return;
+      await fsAction({action:'delete',path});
+      if(selectedPath===path || selectedPath.startsWith(path+'/')){
+        selectedPath=''; originalContent=''; editorEl.value='';
+        contentEl.innerHTML='<p class="hint">左侧选择一个 .md 文件。</p>';
+        switchMode(false);
+      }
+      setStatus(`已删除 ${path}`,'ok');
+      await loadTree();
+      syncControls();
+    }
+
+    function renderNode(node){
+      const wrapper=document.createElement('div');
+      const title=document.createElement('div');
+      title.className=`node ${node.type}`;
+      title.textContent=node.type==='dir'?`📁 ${node.name}`:`📄 ${node.name}`;
+
+      if(node.type==='file'){
+        title.onclick=()=>loadFile(node.path,title);
+        title.oncontextmenu=(e)=>{
+          e.preventDefault();
+          showContextMenu(e.clientX,e.clientY,[
+            {label:'重命名',onClick:()=>renameFile(node.path)},
+            {label:'删除',danger:true,onClick:()=>deletePath(node.path,'文件')}
+          ]);
+        };
+      }else{
+        const children=document.createElement('div');
+        children.className='children';
+        let expanded=false;
+        children.style.display='none';
+        title.textContent=`📂 ${node.name}`;
+        title.onclick=()=>{expanded=!expanded;children.style.display=expanded?'block':'none';title.textContent=`${expanded?'📁':'📂'} ${node.name}`;};
+        title.oncontextmenu=(e)=>{
+          e.preventDefault();
+          showContextMenu(e.clientX,e.clientY,[
+            {label:'新建文件',onClick:()=>createFile(node.path)},
+            {label:'重命名',onClick:()=>renameDir(node.path)},
+            {label:'删除文件夹',danger:true,onClick:()=>deletePath(node.path,'文件夹')}
+          ]);
+        };
+        (node.children||[]).forEach(child=>children.appendChild(renderNode(child)));
+        wrapper.appendChild(title); wrapper.appendChild(children); return wrapper;
+      }
+      wrapper.appendChild(title); return wrapper;
+    }
+
+    async function loadTree(){
+      const res=await fetch('/api/tree'); const data=await res.json();
+      topbarEl.textContent=`OpenClaw Memory Editor · ${data.root}`;
+      treeEl.innerHTML=''; data.tree.forEach(node=>treeEl.appendChild(renderNode(node)));
+    }
+
+    async function loadFile(path, el){
+      if(!canLeaveCurrentFile()) return;
+      document.querySelectorAll('.node.file').forEach(n=>n.classList.remove('selected')); if(el) el.classList.add('selected');
+      const res=await fetch('/api/file?path='+encodeURIComponent(path)); const data=await res.json();
+      if(!res.ok){setStatus(`读取失败: ${data.error||'unknown'}`,'warn'); return;}
+      selectedPath=path; originalContent=data.content||''; editorEl.value=originalContent; renderPreview(originalContent); setStatus(`已加载 ${path}`); switchMode(false); syncControls();
+    }
+
+    async function saveFile(){
+      if(!selectedPath||!hasChanges()) return;
+      setStatus('保存中...');
+      const res=await fetch('/api/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:selectedPath,content:editorEl.value})});
+      const data=await res.json();
+      if(!res.ok){setStatus(`保存失败: ${data.error||'unknown'}`,'warn');return;}
+      originalContent=editorEl.value; renderPreview(originalContent); setStatus(`已保存 ${selectedPath}`,'ok'); syncControls();
+    }
+
+    toggleModeBtn.addEventListener('click',()=>{if(!selectedPath) return; switchMode(!isEditMode)});
+    saveBtn.addEventListener('click',saveFile);
+    editorEl.addEventListener('input',()=>{syncControls();setStatus(hasChanges()?'有未保存改动':`已加载 ${selectedPath||''}`,hasChanges()?'warn':'')});
+    document.addEventListener('keydown',async(e)=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();await saveFile();}});
+
+    sidebarEl.addEventListener('contextmenu',(e)=>{
+      if(e.target.closest('.node')) return;
+      e.preventDefault();
+      showContextMenu(e.clientX,e.clientY,[{label:'新建文件到根目录',onClick:()=>createFile('')}]);
+    });
+
+    document.addEventListener('click', hideContextMenu);
+    window.addEventListener('resize', hideContextMenu);
+
+    loadTree().catch(err=>{contentEl.innerHTML=`<p class="hint">初始化失败: ${esc(err.message)}</p>`;setStatus('初始化失败','warn')});
+  </script>
+</body>
+</html>
