@@ -25,7 +25,8 @@ function sendText(res, code, text, contentType = 'text/plain; charset=utf-8') {
 function safeResolve(relPath) {
   const cleaned = String(relPath || '').replace(/^\/+/, '');
   const fullPath = path.resolve(ROOT, cleaned);
-  if (!fullPath.startsWith(ROOT)) return null;
+  const relative = path.relative(ROOT, fullPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
   return fullPath;
 }
 
@@ -106,6 +107,27 @@ async function buildTree(dir, rel = '') {
   return children;
 }
 
+async function collectMarkdownFiles(dir, rel = '') {
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.git')) continue;
+    if (entry.name === '.memory-viewer-trash') continue;
+
+    const entryRel = path.join(rel, entry.name);
+    const full = path.join(dir, entry.name);
+
+    if (entry.isDirectory()) {
+      files.push(...await collectMarkdownFiles(full, entryRel));
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      files.push({ relPath: entryRel, fullPath: full });
+    }
+  }
+
+  return files;
+}
+
 async function handleFsAction(body) {
   const action = body.action;
 
@@ -155,16 +177,34 @@ async function handleFsAction(body) {
   if (action === 'delete') {
     const relPath = body.path || '';
     const full = safeResolve(relPath);
-    if (!full) throw new Error('Invalid path.');
+    if (!full || full === ROOT) throw new Error('Invalid path.');
     const stat = await fsp.stat(full).catch(() => null);
     if (!stat) throw new Error('Path not found.');
 
-    if (stat.isFile() && !validateMdPath(relPath)) {
-      throw new Error('Only .md files are allowed.');
+    if (stat.isFile()) {
+      if (!validateMdPath(relPath)) {
+        throw new Error('Only .md files are allowed.');
+      }
+
+      const trashed = await moveToTrash(relPath, full);
+      return { ok: true, path: relPath, trashed, deletedMarkdownCount: 1 };
     }
 
-    const trashed = await moveToTrash(relPath, full);
-    return { ok: true, path: relPath, trashed };
+    if (stat.isDirectory()) {
+      const markdownFiles = await collectMarkdownFiles(full, relPath);
+      if (markdownFiles.length === 0) {
+        return { ok: true, path: relPath, deletedMarkdownCount: 0, trashed: [] };
+      }
+
+      const trashed = [];
+      for (const file of markdownFiles) {
+        trashed.push(await moveToTrash(file.relPath, file.fullPath));
+      }
+
+      return { ok: true, path: relPath, deletedMarkdownCount: markdownFiles.length, trashed };
+    }
+
+    throw new Error('Unsupported path type.');
   }
 
   throw new Error('Unknown action.');

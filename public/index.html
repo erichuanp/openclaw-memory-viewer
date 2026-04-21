@@ -151,13 +151,16 @@
 
     async function deletePath(path, label){
       if(!confirm(`确认删除${label}：${path} ?`)) return;
-      await fsAction({action:'delete',path});
+      const result = await fsAction({action:'delete',path});
       if(selectedPath===path || selectedPath.startsWith(path+'/')){
         selectedPath=''; originalContent=''; editorEl.value='';
         contentEl.innerHTML='<p class="hint">左侧选择一个 .md 文件。</p>';
         switchMode(false);
       }
-      setStatus(`已删除 ${path}`,'ok');
+      const msg = label==='文件夹'
+        ? `已处理 ${path}（移走 ${result.deletedMarkdownCount||0} 个 .md 文件）`
+        : `已删除 ${path}`;
+      setStatus(msg,'ok');
       await loadTree();
       syncControls();
     }
