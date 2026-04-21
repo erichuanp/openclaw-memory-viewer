@@ -1,0 +1,25 @@
+{
+  "name": "memory-viewer",
+  "version": "1.0.0",
+  "description": "A small local web app for browsing and editing Markdown files.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erichuanp/openclaw-memory-viewer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/erichuanp/openclaw-memory-viewer/issues"
+  },
+  "homepage": "https://github.com/erichuanp/openclaw-memory-viewer#readme",
+  "dependencies": {
+    "marked": "^18.0.2"
+  }
+}

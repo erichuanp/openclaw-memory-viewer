@@ -3,6 +3,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
+const { spawn } = require('child_process');
 
 const PORT = Number(process.env.PORT || 9999);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -36,11 +37,31 @@ function timestampId() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: 'ignore' });
+    child.on('error', (error) => resolve({ ok: false, error }));
+    child.on('close', (code) => resolve({ ok: code === 0, code }));
+  });
+}
+
 async function moveToTrash(relPath, fullPath) {
+  if (process.platform === 'darwin') {
+    const result = await runCommand('/usr/bin/trash', [fullPath]);
+    if (result.ok) {
+      return { mode: 'system-trash', target: 'macOS Trash' };
+    }
+  }
+
+  const trashPut = await runCommand('trash-put', [fullPath]);
+  if (trashPut.ok) {
+    return { mode: 'system-trash', target: 'freedesktop trash' };
+  }
+
   const target = path.join(TRASH_DIR, `${timestampId()}__${relPath.replace(/[\\/]/g, '__')}`);
   await fsp.mkdir(path.dirname(target), { recursive: true });
   await fsp.rename(fullPath, target);
-  return target;
+  return { mode: 'local-trash', target };
 }
 
 function readBody(req) {
@@ -142,8 +163,8 @@ async function handleFsAction(body) {
       throw new Error('Only .md files are allowed.');
     }
 
-    const trashedTo = await moveToTrash(relPath, full);
-    return { ok: true, path: relPath, trashedTo };
+    const trashed = await moveToTrash(relPath, full);
+    return { ok: true, path: relPath, trashed };
   }
 
   throw new Error('Unknown action.');
@@ -232,5 +253,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`Memory viewer running at http://${HOST}:${PORT}`);
   console.log(`Workspace root: ${ROOT}`);
-  console.log(`Trash dir: ${TRASH_DIR}`);
+  console.log(`Fallback trash dir: ${TRASH_DIR}`);
 });
